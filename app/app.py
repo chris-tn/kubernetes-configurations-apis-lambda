@@ -24,7 +24,7 @@ import sys
 
 # Logger
 logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 # Jinja configs
 templateLoader = jinja2.FileSystemLoader(searchpath="./")
@@ -53,7 +53,7 @@ def create_kubeconfig(cluster_name):
     :param cluster_name: the name of the EKS cluster
     """
     logger.info('Create kube config file.')
-    configure_cli = f'aws eks update-kubeconfig --name {cluster_name}'
+    configure_cli = f'aws eks --region ap-northeast-1 update-kubeconfig --name {cluster_name}'
     output = subprocess.run(
         f'{configure_cli}',
         encoding='utf-8',
@@ -75,18 +75,12 @@ def update_identity_mappings(event, action):
     :param action: `apply` to create/update the config map, or `delete` to delete it
     """
 
-    template_file = "templates/aws-auth.yaml.jinja"
-    template = templateEnv.get_template(template_file)
-    aws_auth = template.render(roleMappings=event["ResourceProperties"]["RoleMappings"])
-    command_base = 'cat <<EOF | kubectl -n kube-system apply -f -\n{0}\nEOF'
-
     commands = {
-        "apply": command_base.format(aws_auth),
-        "delete": "kubectl -n kube-system delete configmap aws-auth"
+        "apply": "kubectl get pod -n webrtcnttcom --kubeconfig /tmp/kubeconfig",
+        "delete": "kubectl version"
     }
 
-    logger.info('Updating identity mappings...')
-    logger.info("rendered template: %s", aws_auth)
+   
     output = subprocess.run(
         args=commands[action],
         encoding='utf-8',
@@ -94,51 +88,14 @@ def update_identity_mappings(event, action):
         shell=True,
         check=False
     )
-    if output.returncode != 0:
-        if action == 'delete' and "\"aws-auth\" not found" in output.stderr:
-            logger.error('aws-auth config map not found during delete operation. Ignoring error...')
-            logger.error('output: %s', output.stdout)
-            return
-        else:
-            raise RuntimeError(f'Failed to update identity mappings: {output.stderr}.')
+    if output.returncode != 0:    
+        raise RuntimeError(f'Failed to update identity mappings: {output.stderr}.')
 
     logger.info('Successfully updated identity mappings.')
     command_output = get_stdout(output)
     logger.info('output: %s', command_output)
-    return
+    return 
 
-
-def get_response_data():
-    """
-    Runs `kubectl get cm aws-auth` to use it as the cfn resource data.
-    :return: the contents of the aws-auth config map's `data` field
-    """
-    command = "kubectl -n kube-system get configmap aws-auth -o json"
-    output = subprocess.run(
-        args=command,
-        encoding='utf-8',
-        capture_output=True,
-        shell=True,
-        check=False
-    )
-    if output.returncode != 0:
-        raise RuntimeError(f'Failed to update identity mappings: {output.stderr}.')
-
-    stdout = get_stdout(output)
-
-    return json.loads(stdout)['data']
-
-
-def get_resource_id(event):
-    """
-    Returns the CFN Resource ID with format <cluster_name>_aws-auth.
-    :param event: the CFN event
-    :return: the CFN resource id
-    """
-    cluster_name = event["ResourceProperties"]['ClusterName']
-    resource_id = cluster_name + "_aws-auth"
-
-    return resource_id
 
 
 def handler(event, _):
@@ -159,11 +116,12 @@ def handler(event, _):
             create(event)
         elif event['RequestType'] == 'Delete':
             delete(event)
-    except Exception:
+    except Exception as ex:
         logger.error('Signaling failure')
+        logger.error(ex)
         sys.exit(1)
     else:
-        sys.exit(0)
+        return "Success!"
 
 
 def create(event):
